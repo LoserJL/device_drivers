@@ -72,7 +72,7 @@ struct i2c_driver {
 #define to_i2c_driver(d) container_of(d, struct i2c_driver, driver)
 
 /**
- * I2C slave设备结构体
+ * I2C slave设备结构体，i2c设备一般在板文件或者设备树中定义
  * 
  * 一个i2c_client标识连接到i2c总线的一个个设备（即芯片）。
  */
@@ -100,6 +100,85 @@ struct i2c_client {
 #endif
 };
 #define to_i2c_client(d) container_of(d, struct i2c_client, dev)
+
+/* 在板文件中定义i2c设备时使用，配合I2C_BOARD_INFO()宏快速初始化i2c设备 */
+struct i2c_board_info {
+	char        type[I2C_NAME_SIZE];  //设备名，最长20个字符，最终安装到client的name上
+	unsigned short    flags;  //最终安装到client.flags
+	unsigned short    addr;  //设备从地址slave address，最终安装到client.addr上
+	void        *platform_data;  //设备数据，最终存储到i2c_client.dev.platform_data上
+	struct dev_archdata    *archdata;
+	struct device_node *of_node;  //OpenFirmware设备节点指针
+	struct acpi_dev_node acpi_node;
+	int        irq;  //设备采用的中断号，最终存储到i2c_client.irq上
+};
+//可以看到，i2c_board_info基本是与i2c_client对应的。
+//通过这个宏定义可以方便的定义I2C设备的名称和从地址（别忘了是7bit的）
+#define I2C_BOARD_INFO(dev_type, dev_addr) \
+	.type = dev_type, .addr = (dev_addr)
+/* 例如，在板文件可以采用如下方式定义i2c设备 */
+static struct i2c_board_info i2c0_devices[] = {
+	{
+		I2C_BOARD_INFO("ak4648", 0x12),
+	},
+	{
+		I2C_BOARD_INFO("r2025sd", 0x32),
+	},
+	{
+		I2C_BOARD_INFO("ak8975", 0x0c),
+		.irq = intcs_evt2irq(0x3380), /* IRQ28 */
+	},
+	{
+		I2C_BOARD_INFO("adxl34x", 0x1d),
+		.irq = intcs_evt2irq(0x3340), /* IRQ26 */
+	},
+};
+/* 然后把定义的i2c设备注册到系统中去 */
+/* 这样注册之后，i2c_adapter注册的时候就会扫描所有的已注册的2c_board_info，
+ * 并为连接自己的i2c设备建立一个 i2c_client。
+ * 这样在2c_board_info中的同名i2c_driver注册的时候，
+ * i2c_client就会和i2c_driver绑定了，i2c_driver的probe函数被调用。 */
+i2c_register_board_info(0, i2c0_devices, ARRAY_SIZE(i2c0_devices));
+
+/* 上面的方法有诸多限制，必须在编译内核的时候知道i2c的总线编号和物理的连接。
+ * 有时开发者面对的是一个已经存在的系统，无法修改内核。
+ * 或者内核开发者移植系统的时候也不知道有哪些i2c设备或者到底有多少i2c总线。
+ * 在这种情况下就需要用到i2c_new_device()了 */
+/* 这个函数将会使用info提供的信息建立一个i2c_client并与第一个参数指向的
+ * i2c_adapter绑定。返回的参数是一个i2c_client指针。
+ * 驱动中可以直接使用i2c_client指针和设备通信了。这个方法是一个比较简单的方法。*/
+struct i2c_client * i2c_new_device(struct i2c_adapter *adap, struct i2c_board_info const *info);
+
+/* 获取i2c_adapter指针 */
+struct i2c_adapter* i2c_get_adapter(int id)；//它的参数是i2c总线编号。
+/* 使用完要释放 */
+void i2c_put_adapter(struct i2c_adapter *adap);
+
+/* 如果连i2c设备的地址都是不固定的，甚至在不同的板子上有不同的地址，
+ * 可以提供一个地址列表供系统探测。此时应该使用的函数是i2c_new_probe_device() */
+Example (from the pnx4008 OHCI driver):
+static const unsigned short normal_i2c[] = { 0x2c, 0x2d, I2C_CLIENT_END };
+static int __devinit usb_hcd_pnx4008_probe(struct platform_device *pdev)
+{
+   (...)
+	struct i2c_adapter *i2c_adap;
+	struct i2c_board_info i2c_info;
+	(...)
+	i2c_adap = i2c_get_adapter(2);
+	memset(&i2c_info, 0, sizeof(struct i2c_board_info));
+	strlcpy(i2c_info.name, "isp1301_pnx", I2C_NAME_SIZE);
+	isp1301_i2c_client = i2c_new_probed_device(i2c_adap, &i2c_info,
+											   normal_i2c);
+	i2c_put_adapter(i2c_adap);
+	(...)
+}
+
+/* 这个函数将会在指定的总线上探测addr_list中的地址，
+ * 将第一个有ACK反馈的地址赋给info->addr 然后使用前两个参数调用i2c_new_device。
+ * 它的返回值也是一个可用的i2c_client指针。 
+ * i2c_unregister_device() 可以注销 i2c_new_device()/i2c_new_probed_device()申请的i2c_client。 */
+/* i2c_new_probed_device的原型是 */ 
+struct i2c_client * i2c_new_probed_device(struct i2c_adapter *adap,struct i2c_board_info *info,unsigned short const *addr_list)；
 
 /**********************驱动模板***************************/
 
